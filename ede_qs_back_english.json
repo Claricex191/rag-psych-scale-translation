@@ -1,0 +1,64 @@
+{
+  "items": [
+    {
+      "number": "1",
+      "original": "你曾为了改变体重或体形而试图刻意限制自己的进食量？（无论你是否已经成功）",
+      "translation": "Have you ever tried to deliberately restrict how much you eat in order to change your weight or shape? (whether or not you succeeded)"
+    },
+    {
+      "number": "2",
+      "original": "你曾为了改变体重或体形在很长一段时间内（清醒状态下8小时或更长）不进食？",
+      "translation": "Have you ever gone without eating for a long period of time (8 or more hours while awake) in order to change your weight or shape?"
+    },
+    {
+      "number": "3",
+      "original": "你曾因思考食物、进食、或卡路里而难以将注意力集中于自己感兴趣的事情上（例如工作、交谈、或者读书）？",
+      "translation": "Have you ever found it hard to concentrate on things you are interested in (e.g., work, conversations, or reading) because you were thinking about food, eating, or calories?"
+    },
+    {
+      "number": "4",
+      "original": "你曾因思考体重或体形而难以将注意力集中于自己感兴趣的事情上（例如工作、交谈、或者读书）？",
+      "translation": "Have you ever found it hard to concentrate on things you are interested in (e.g., work, conversations, or reading) because you were thinking about your weight or shape?"
+    },
+    {
+      "number": "5",
+      "original": "你曾明确地惧怕自己可能会变胖？",
+      "translation": "Have you ever had a definite fear of gaining weight?"
+    },
+    {
+      "number": "6",
+      "original": "你曾对减肥有强烈的渴望？",
+      "translation": "Have you ever had a strong desire to lose weight?"
+    },
+    {
+      "number": "7",
+      "original": "你曾试图让自己呕吐或服用泻药来控制自己的体重或体形？",
+      "translation": "Have you ever tried to make yourself vomit or taken laxatives to control your weight or shape?"
+    },
+    {
+      "number": "8",
+      "original": "你曾以“驱使”或“强迫”自己运动的方式来控制自己的体重、体形、体脂含量或燃烧卡路里？",
+      "translation": "Have you ever exercised in a driven or compelled way to control your weight, shape, body fat, or to burn calories?"
+    },
+    {
+      "number": "9",
+      "original": "当你在进食的时候，你曾产生对进食失去控制的感觉？",
+      "translation": "When you were eating, have you ever felt that you had lost control over your eating?"
+    },
+    {
+      "number": "10",
+      "original": "在你对进食失去控制的时间里，其中有多少天你一次性吃了他人会认为量特别大的食物？",
+      "translation": "During the times when you felt out of control with eating, on how many days did you, in a single sitting, eat an amount of food that others would consider especially large?"
+    },
+    {
+      "number": "11",
+      "original": "你的体重或体形影响了你对自己作为一个人的想法或评价吗？",
+      "translation": "Does your weight or shape influence how you think about or judge yourself as a person?"
+    },
+    {
+      "number": "12",
+      "original": "你对自己的体重或体形有多不满意？",
+      "translation": "How dissatisfied are you with your weight or shape?"
+    }
+  ]
+}

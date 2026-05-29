@@ -1,0 +1,29 @@
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Runtime data
+rag_storage/
+output/
+
+# Third-party vendored
+bleurt/
+
+# Old versioned files
+client_v0125.py
+client_v1208.py
+server_v1128.py
+server_v1208.py
+embed_EGA_originalver.py
+test.py
+
+# IDE / OS
+.idea/
+.DS_Store
