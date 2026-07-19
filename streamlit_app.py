@@ -1,220 +1,60 @@
-import asyncio
 import json
-import re
 import logging
+import os
+import re
+import tempfile
 import uuid
-from typing import Dict, Optional
+from pathlib import Path
 
 import streamlit as st
 
+from rag_client import RAGClient
+
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────── LLM client helpers ────────────────────────────
+FORWARD_URL = os.getenv("FORWARD_SERVER_URL", "http://127.0.0.1:8000")
+BACKWARD_URL = os.getenv("BACKWARD_SERVER_URL", "http://127.0.0.1:8001")
+APP_PASSWORD = os.getenv("APP_PASSWORD")
 
-def _get_clients(api_keys: dict):
-    clients = {}
-    if api_keys.get("anthropic"):
-        import anthropic
-        clients["claude"] = anthropic.AsyncAnthropic(api_key=api_keys["anthropic"])
-    if api_keys.get("openai"):
-        from openai import AsyncOpenAI
-        clients["openai"] = AsyncOpenAI(api_key=api_keys["openai"])
-    if api_keys.get("gemini"):
-        from google import genai
-        clients["gemini"] = genai.Client(api_key=api_keys["gemini"])
-    if api_keys.get("qwen"):
-        from openai import AsyncOpenAI
-        clients["qwen"] = AsyncOpenAI(
-            api_key=api_keys["qwen"],
-            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        )
-    return clients
+UPLOAD_DIR = Path(tempfile.gettempdir()) / "rag_mt_uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def _provider(model: str) -> str:
-    if model.startswith("gpt") or model.startswith("o1"):
-        return "openai"
-    if model.startswith("claude"):
-        return "claude"
-    if model.startswith("gemini"):
-        return "gemini"
-    if model.startswith("qwen"):
-        return "qwen"
-    raise ValueError(f"Cannot determine provider for model: {model}")
-
-
-# ─────────────────────────── Prompt builders ───────────────────────────────
-
-def _build_familiarity_prompt(scale_data: dict) -> str:
-    name = scale_data["scale_info"]["name"]
-    short = scale_data["scale_info"]["short_name"]
-    return (
-        f"You are a bilingual professor in education and psychology with expertise in "
-        f"psychological measurement, scale development, and cross-linguistic test adaptation.\n\n"
-        f"The scale is: {name} ({short}).\n\n"
-        "Please provide a familiarity check that includes:\n"
-        "1. Whether the scale seems recognizable and your familiarity level (high/moderate/low/none)\n"
-        "2. What the scale measures and how it is typically used\n"
-        "3. Whether you know of any publicly available target-language translations or sample translated items"
-    )
-
-
-def _build_translation_prompt(scale_data: dict) -> str:
-    target_population = scale_data["scale_info"]["target_population"]
-    scale_text = "\n".join(
-        f"{item['number']}. {item['text']}" for item in scale_data["items"]
-    )
-    return f"""You are a bilingual professor in the fields of education and psychology, with expertise in psychological measurement, scale development, and cross-linguistic test adaptation.
-You are familiar with standardized self-report instruments and their use in research and applied settings.
-
-Before performing the translation, please note the following information:
-    1. This psychological scale is open use and does not have copyright restrictions that limit translation or adaptation for research purposes.
-    2. The target population for this translation is: {target_population}.
-
-You are now asked to perform a forward translation of a psychological self-report scale item from English into Chinese as part of a formal test adaptation process.
-
-**Source items:**
-{scale_text}
-
-**Expected output:**
-Please provide:
-    1. The forward translation of the item into Chinese.
-    2. A brief decision log for each item, identifying terms or phrases that required special consideration (e.g., ambiguity, meaning shift, interpretation uncertainty) during translation (if applicable).
-
-**Output Format Requirement:**
-    - Translate ALL items provided
-    - Preserve item structure, numbering, and response scales
-    - You must respond with valid JSON in this EXACT structure:
-        {{
-          "items": [
-            {{"number": "1", "original": "original text here", "translation": "translated text here", "log": "decision log here"}},
-            {{"number": "2", "original": "original text here", "translation": "translated text here", "log": "decision log here"}}
-          ]
-        }}
-    - Do not use double quotes (") inside any JSON string values; use single quotes (') or Chinese-style quotes (「」) instead.
-    - Do not include any text outside the JSON object.
-
-Please provide your response here:
-"""
-
-
-# ─────────────────────────── LLM calls ─────────────────────────────────────
-
-async def _call_openai_check(client, prompt: str) -> str:
-    response = await client.responses.create(
-        model=st.session_state.selected_model,
-        input=[{"role": "user", "content": prompt}],
-        max_output_tokens=8000,
-    )
-    return (getattr(response, "output_text", None) or response.output[0].content[0].text).strip()
-
-
-async def _call_claude_check(client, prompt: str) -> str:
-    response = await client.messages.create(
-        model=st.session_state.selected_model,
-        max_tokens=8000,
-        messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-    )
-    return response.content[0].text.strip()
-
-
-async def _call_gemini_check(client, prompt: str) -> str:
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=st.session_state.selected_model,
-        contents=[prompt],
-        config={"max_output_tokens": 8000},
-    )
-    return response.text.strip()
-
-
-async def _call_qwen_check(client, prompt: str) -> str:
-    response = await client.chat.completions.create(
-        model=st.session_state.selected_model,
-        max_tokens=8000,
-        messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-    )
-    return response.choices[0].message.content.strip()
-
-
-async def _call_openai_translate(client, prompt: str, temperature: float) -> str:
-    response = await client.responses.create(
-        model=st.session_state.selected_model,
-        input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-        max_output_tokens=10000,
-        temperature=temperature,
-        text={"format": {"type": "json_object"}},
-    )
-    return (getattr(response, "output_text", None) or response.output[0].content[0].text).strip()
-
-
-async def _call_claude_translate(client, prompt: str, temperature: float) -> str:
-    response = await client.messages.create(
-        model=st.session_state.selected_model,
-        max_tokens=10000,
-        messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        temperature=temperature,
-    )
-    return response.content[0].text.strip()
-
-
-async def _call_gemini_translate(client, prompt: str, temperature: float) -> str:
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=st.session_state.selected_model,
-        contents=[prompt],
-        config={
-            "temperature": temperature,
-            "max_output_tokens": 10000,
-            "response_mime_type": "application/json",
-        },
-    )
-    return response.text.strip()
-
-
-async def _call_qwen_translate(client, prompt: str, temperature: float) -> str:
-    response = await client.chat.completions.create(
-        model=st.session_state.selected_model,
-        max_tokens=10000,
-        messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        temperature=temperature,
-        response_format={"type": "json_object"},
-    )
-    return response.choices[0].message.content.strip()
-
-
-async def run_familiarity_check(scale_data: dict, clients: dict, model: str) -> str:
-    prompt = _build_familiarity_prompt(scale_data)
-    provider = _provider(model)
-    if provider == "openai":
-        return await _call_openai_check(clients["openai"], prompt)
-    if provider == "claude":
-        return await _call_claude_check(clients["claude"], prompt)
-    if provider == "gemini":
-        return await _call_gemini_check(clients["gemini"], prompt)
-    if provider == "qwen":
-        return await _call_qwen_check(clients["qwen"], prompt)
-    raise ValueError(f"Unsupported provider: {provider}")
-
-
-async def run_translation(scale_data: dict, clients: dict, model: str, temperature: float) -> str:
-    prompt = _build_translation_prompt(scale_data)
-    provider = _provider(model)
-    if provider == "openai":
-        return await _call_openai_translate(clients["openai"], prompt, temperature)
-    if provider == "claude":
-        return await _call_claude_translate(clients["claude"], prompt, temperature)
-    if provider == "gemini":
-        return await _call_gemini_translate(clients["gemini"], prompt, temperature)
-    if provider == "qwen":
-        return await _call_qwen_translate(clients["qwen"], prompt, temperature)
-    raise ValueError(f"Unsupported provider: {provider}")
+MODEL_OPTIONS = {
+    "GPT (OpenAI)": [
+        "gpt-4.1-2025-04-14",
+        "gpt-4o-2024-11-20",
+        "o3-2025-04-16",
+        "gpt-5.2-2025-12-11",
+    ],
+    "Claude (Anthropic)": [
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-4-6",
+        "claude-opus-4-8",
+        "claude-haiku-4-5-20251001",
+    ],
+    "Gemini (Google)": [
+        "gemini-2.5-pro-preview-06-05",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-3-pro-preview",
+    ],
+    "Qwen (Alibaba)": [
+        "qwen3-vl-plus-2025-12-19",
+        "qwen-max",
+        "qwen-plus",
+    ],
+}
 
 
 # ─────────────────────────── JSON parser ───────────────────────────────────
+# The RAG servers return the LLM's translation as a JSON *string* embedded in
+# their response (server_forward.py's _extract_json_translation / same in
+# server_backward.py) — this turns that string into a dict for the UI.
 
-def extract_json_translation(text: str) -> dict:
-    cleaned = text.strip()
+def extract_json_translation(text) -> dict:
+    if isinstance(text, dict):
+        return text
+
+    cleaned = (text or "").strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned)
         cleaned = re.sub(r'\n?```\s*$', '', cleaned)
@@ -251,52 +91,65 @@ def extract_json_translation(text: str) -> dict:
     return {"items": [], "parse_error": "Could not extract valid JSON from response"}
 
 
-# ─────────────────────────── Streamlit UI ──────────────────────────────────
-
-MODEL_OPTIONS = {
-    "GPT (OpenAI)": [
-        "gpt-4.1-2025-04-14",
-        "gpt-4o-2024-11-20",
-        "o3-2025-04-16",
-        "gpt-5.2-2025-12-11",
-    ],
-    "Claude (Anthropic)": [
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-6",
-        "claude-opus-4-8",
-        "claude-haiku-4-5-20251001",
-    ],
-    "Gemini (Google)": [
-        "gemini-2.5-pro-preview-06-05",
-        "gemini-2.5-flash-preview-05-20",
-        "gemini-3-pro-preview",
-    ],
-    "Qwen (Alibaba)": [
-        "qwen3-vl-plus-2025-12-19",
-        "qwen-max",
-        "qwen-plus",
-    ],
-}
-
-PROVIDER_KEY = {
-    "GPT (OpenAI)": "openai",
-    "Claude (Anthropic)": "anthropic",
-    "Gemini (Google)": "gemini",
-    "Qwen (Alibaba)": "qwen",
-}
+def _forward_client() -> RAGClient:
+    client = RAGClient(FORWARD_URL)
+    client.session_id = st.session_state.get("session_id")
+    return client
 
 
-def _load_api_keys() -> dict:
-    """Load keys from Streamlit secrets, falling back to sidebar inputs."""
-    keys = {}
-    for k in ("anthropic", "openai", "gemini", "qwen"):
-        try:
-            val = st.secrets.get(k) or st.secrets.get(f"{k.upper()}_API_KEY")
-            if val:
-                keys[k] = val
-        except Exception:
-            pass
-    return keys
+def _write_temp_json(data: dict, tag: str) -> str:
+    path = UPLOAD_DIR / f"{tag}_{uuid.uuid4()}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return str(path)
+
+
+def _render_translation_table(items: list, key_prefix: str):
+    for item in items:
+        col_num, col_orig, col_trans = st.columns([0.5, 3, 3])
+        col_num.markdown(f"**{item.get('number', '')}**")
+        col_orig.markdown(item.get("original", ""))
+        col_trans.markdown(item.get("translation", ""))
+        if item.get("log"):
+            st.caption(f"Decision log: {item['log']}")
+        st.markdown("---")
+
+
+def _guideline_uploader(label: str, base_url: str, state_key: str):
+    with st.expander(label, expanded=False):
+        st.caption(
+            "Only needed the first time a guideline document is used — indexed "
+            "PDFs persist on the server. Skip if reference documents are already indexed."
+        )
+        files = st.file_uploader(
+            "Upload guideline PDF(s)", type=["pdf"], accept_multiple_files=True, key=f"{state_key}_uploader"
+        )
+        if files and st.button("Index PDF(s)", key=f"{state_key}_button"):
+            client = RAGClient(base_url)
+            for f in files:
+                with st.spinner(f"Indexing {f.name}…"):
+                    result = client.upload_guideline(f.name, f.getvalue())
+                if result.get("success"):
+                    st.success(f"{f.name}: {result.get('message', 'indexed')}")
+                else:
+                    st.error(f"{f.name}: {result.get('error', 'failed to index')}")
+
+
+def _password_gate():
+    if not APP_PASSWORD:
+        return
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title("🧪 Scale Translation")
+    entered = st.text_input("Password", type="password")
+    if st.button("Enter"):
+        if entered == APP_PASSWORD:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
 
 
 def main():
@@ -307,17 +160,18 @@ def main():
         initial_sidebar_state="expanded",
     )
 
+    _password_gate()
+
     st.title("Psychological Scale Forward Translation")
     st.caption(
-        "Translate psychological measurement scales from English to Chinese using AI. "
-        "Two-stage workflow: familiarity check → translation."
+        "RAG-grounded translation of psychological measurement scales from English "
+        "to Chinese, with an optional backward-translation evaluation step."
     )
 
     # ── Sidebar ──────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # Model selection
         st.subheader("Model")
         provider_label = st.selectbox("Provider", list(MODEL_OPTIONS.keys()))
         model_list = MODEL_OPTIONS[provider_label]
@@ -331,51 +185,38 @@ def main():
         temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.05)
 
         st.divider()
+        st.caption(
+            "API keys for the selected model's provider are configured on the "
+            "server — nothing to enter here."
+        )
 
-        # API Keys
-        st.subheader("🔑 API Keys")
-        st.caption("Keys in Streamlit secrets are loaded automatically. Enter here to override.")
+    model = st.session_state.selected_model
+    if not model:
+        st.warning("Select or enter a model in the sidebar.")
+        st.stop()
 
-        preset_keys = _load_api_keys()
-        required_provider = PROVIDER_KEY[provider_label]
-
-        key_fields = {
-            "anthropic": "Anthropic (Claude)",
-            "openai": "OpenAI",
-            "gemini": "Google Gemini",
-            "qwen": "Qwen / Alibaba",
-        }
-        sidebar_keys = {}
-        for k, label in key_fields.items():
-            default = preset_keys.get(k, "")
-            masked_placeholder = "Loaded from secrets ✓" if default else f"{label} API key"
-            entered = st.text_input(label, value="", placeholder=masked_placeholder, type="password", key=f"key_{k}")
-            sidebar_keys[k] = entered if entered else default
-
-        if not sidebar_keys.get(required_provider):
-            st.warning(f"No API key for {provider_label}. Add it above.")
-
-        st.divider()
-        st.caption("Built with Streamlit · Deploy on [Streamlit Cloud](https://streamlit.io/cloud)")
-
-    # Collect final API keys
-    api_keys = sidebar_keys
-
-    # ── Main area ─────────────────────────────────────────────────────────────
-
-    # Session state defaults
+    # ── Session state defaults ──────────────────────────────────────────────
     for key, default in [
         ("stage", 0),
         ("familiarity_text", ""),
         ("translation_result", None),
+        ("backward_result", None),
         ("scale_data", None),
+        ("scale_path", None),
         ("session_id", None),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
 
-    # ── File upload ───────────────────────────────────────────────────────────
-    st.subheader("1. Upload Scale File")
+    # ── Reference documents ─────────────────────────────────────────────────
+    st.subheader("1. Reference Documents (optional)")
+    _guideline_uploader("Forward-translation guideline PDFs", FORWARD_URL, "fwd_guidelines")
+    _guideline_uploader("Backward-translation guideline PDFs", BACKWARD_URL, "bwd_guidelines")
+
+    st.divider()
+
+    # ── Scale upload ─────────────────────────────────────────────────────────
+    st.subheader("2. Upload Scale File")
     uploaded = st.file_uploader(
         "Upload a JSON scale file",
         type=["json"],
@@ -386,6 +227,7 @@ def main():
         try:
             scale_data = json.load(uploaded)
             st.session_state.scale_data = scale_data
+            st.session_state.scale_path = _write_temp_json(scale_data, "scale")
 
             info = scale_data.get("scale_info", {})
             items = scale_data.get("items", [])
@@ -402,6 +244,7 @@ def main():
         except Exception as e:
             st.error(f"Could not parse JSON: {e}")
             st.session_state.scale_data = None
+            st.session_state.scale_path = None
 
     st.divider()
 
@@ -410,41 +253,25 @@ def main():
         st.stop()
 
     scale_data = st.session_state.scale_data
-    model = st.session_state.selected_model
-
-    if not model:
-        st.warning("Select or enter a model in the sidebar.")
-        st.stop()
 
     # ── Stage 1: Familiarity check ────────────────────────────────────────────
-    st.subheader("2. Familiarity Check")
-    st.caption(
-        "Ask the model whether it recognises this scale before translating. "
-        "This is optional but recommended."
-    )
+    st.subheader("3. Familiarity Check")
+    st.caption("Ask the model whether it recognises this scale before translating.")
 
-    col_check, col_skip = st.columns([1, 3])
-    run_check = col_check.button("Run familiarity check", type="primary", use_container_width=True)
-    skip_check = col_skip.button("Skip — go straight to translation", use_container_width=True)
-
-    if run_check:
-        if not api_keys.get(PROVIDER_KEY[provider_label]):
-            st.error("API key required. Add it in the sidebar.")
-        else:
-            with st.spinner(f"Asking {model} about this scale…"):
-                try:
-                    clients = _get_clients(api_keys)
-                    result = asyncio.run(run_familiarity_check(scale_data, clients, model))
-                    st.session_state.familiarity_text = result
+    if st.button("Run familiarity check", type="primary"):
+        with st.spinner(f"Asking {model} about this scale…"):
+            try:
+                result = _forward_client().check_familiarity(
+                    scale_path=st.session_state.scale_path, model=model
+                )
+                if result.get("success"):
+                    st.session_state.familiarity_text = result.get("familiarity_summary", "")
+                    st.session_state.session_id = result.get("session_id")
                     st.session_state.stage = 1
-                    st.session_state.session_id = str(uuid.uuid4())
-                except Exception as e:
-                    st.error(f"Familiarity check failed: {e}")
-
-    if skip_check:
-        st.session_state.stage = 1
-        st.session_state.familiarity_text = ""
-        st.session_state.session_id = str(uuid.uuid4())
+                else:
+                    st.error(f"Familiarity check failed: {result.get('error', 'unknown error')}")
+            except Exception as e:
+                st.error(f"Familiarity check failed: {e}")
 
     if st.session_state.familiarity_text:
         with st.expander("Familiarity check result", expanded=True):
@@ -453,27 +280,25 @@ def main():
     st.divider()
 
     # ── Stage 2: Translation ──────────────────────────────────────────────────
-    st.subheader("3. Translate")
+    st.subheader("4. Translate")
 
     if st.session_state.stage < 1:
-        st.info("Complete the familiarity check (or skip it) to unlock translation.")
+        st.info("Complete the familiarity check above to unlock translation.")
         st.stop()
 
-    run_translate = st.button("Translate scale", type="primary")
-
-    if run_translate:
-        if not api_keys.get(PROVIDER_KEY[provider_label]):
-            st.error("API key required. Add it in the sidebar.")
-        else:
-            with st.spinner(f"Translating with {model}… this may take a minute."):
-                try:
-                    clients = _get_clients(api_keys)
-                    raw = asyncio.run(run_translation(scale_data, clients, model, temperature))
-                    parsed = extract_json_translation(raw)
-                    st.session_state.translation_result = parsed
+    if st.button("Translate scale", type="primary"):
+        with st.spinner(f"Translating with {model}… this may take a minute."):
+            try:
+                result = _forward_client().translate(
+                    scale_path=st.session_state.scale_path, model=model, temperature=temperature
+                )
+                if result.get("translation"):
+                    st.session_state.translation_result = extract_json_translation(result["translation"])
                     st.session_state.stage = 2
-                except Exception as e:
-                    st.error(f"Translation failed: {e}")
+                else:
+                    st.error(f"Translation failed: {result.get('error', 'unknown error')}")
+            except Exception as e:
+                st.error(f"Translation failed: {e}")
 
     if st.session_state.translation_result:
         result = st.session_state.translation_result
@@ -485,25 +310,15 @@ def main():
         if items:
             st.success(f"Translated {len(items)} items.")
 
-            # Table view
             with st.expander("Translation table", expanded=True):
-                for item in items:
-                    col_num, col_orig, col_trans = st.columns([0.5, 3, 3])
-                    col_num.markdown(f"**{item.get('number', '')}**")
-                    col_orig.markdown(item.get("original", ""))
-                    col_trans.markdown(item.get("translation", ""))
-                    if item.get("log"):
-                        st.caption(f"Decision log: {item['log']}")
-                    st.markdown("---")
+                _render_translation_table(items, "fwd")
 
-            # Decision logs
             logs = [i for i in items if i.get("log")]
             if logs:
                 with st.expander("Decision logs"):
                     for item in logs:
                         st.markdown(f"**Item {item.get('number')}:** {item.get('log')}")
 
-        # Download
         st.divider()
         scale_name = scale_data["scale_info"].get("short_name", "translation")
         output = {
@@ -512,18 +327,62 @@ def main():
             "translated_items": items,
         }
         st.download_button(
-            label="Download JSON",
+            label="Download forward translation JSON",
             data=json.dumps(output, ensure_ascii=False, indent=2),
             file_name=f"{scale_name}_forward_translation.json",
             mime="application/json",
         )
 
+        # ── Stage 3: Optional backward translation ──────────────────────────
+        st.divider()
+        st.subheader("5. Backward Translation (optional evaluation)")
+        st.caption(
+            "Translates the forward-translation output back into English, so you can "
+            "visually compare it against the original as a fidelity/stability check."
+        )
+
+        if items and st.checkbox("Run backward translation"):
+            if st.button("Run", type="primary", key="run_backward"):
+                with st.spinner(f"Back-translating with {model}…"):
+                    try:
+                        bwd_path = _write_temp_json({"items": items}, "backward")
+                        bwd_client = RAGClient(BACKWARD_URL)
+                        bwd_result = bwd_client.back_translate(
+                            scale_path=bwd_path, model=model, temperature=temperature
+                        )
+                        if bwd_result.get("translation"):
+                            st.session_state.backward_result = extract_json_translation(bwd_result["translation"])
+                        else:
+                            st.error(f"Backward translation failed: {bwd_result.get('error', 'unknown error')}")
+                    except Exception as e:
+                        st.error(f"Backward translation failed: {e}")
+
+            if st.session_state.backward_result:
+                bwd = st.session_state.backward_result
+                if "parse_error" in bwd:
+                    st.warning(f"JSON parsing issue: {bwd['parse_error']}")
+
+                bwd_items = bwd.get("items", [])
+                if bwd_items:
+                    st.success(f"Back-translated {len(bwd_items)} items.")
+                    with st.expander("Backward translation table", expanded=True):
+                        _render_translation_table(bwd_items, "bwd")
+
+                    st.download_button(
+                        label="Download backward translation JSON",
+                        data=json.dumps({"back_translated_items": bwd_items}, ensure_ascii=False, indent=2),
+                        file_name=f"{scale_name}_backward_translation.json",
+                        mime="application/json",
+                    )
+
     # ── Reset ─────────────────────────────────────────────────────────────────
     if st.session_state.stage > 0:
         st.divider()
         if st.button("Start over with a new scale"):
-            for key in ["stage", "familiarity_text", "translation_result", "scale_data", "session_id"]:
-                st.session_state[key] = None if key in ("translation_result", "scale_data", "session_id") else (0 if key == "stage" else "")
+            for key in ["stage", "familiarity_text", "translation_result", "backward_result",
+                        "scale_data", "scale_path", "session_id"]:
+                st.session_state[key] = None if key not in ("stage",) else 0
+            st.session_state.familiarity_text = ""
             st.rerun()
 
 

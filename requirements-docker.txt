@@ -97,4 +97,3 @@ urllib3==2.5.0
 uvicorn==0.35.0
 
 sentence-transformers>=2.7.0
-rpy2==3.6.4

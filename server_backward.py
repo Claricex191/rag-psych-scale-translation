@@ -34,6 +34,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+GUIDELINES_DIR = Path(os.getenv("GUIDELINES_DIR", "./guidelines-backward"))
+GUIDELINES_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # ------------------------------- RAG Server -------------------------------
 class Rag_server:
@@ -46,8 +49,9 @@ class Rag_server:
             logger.info("Using in-memory Qdrant client")
         else:
             try:
-                self.qdrant_client = QdrantClient(path="/project/def-fji/rag_server_backward/qdrant-db")
-                logger.info("Using embedded Qdrant at /project/def-fji/rag_server_backward/qdrant-db")
+                qdrant_path = os.getenv("QDRANT_PATH", "./qdrant-db-backward")
+                self.qdrant_client = QdrantClient(path=qdrant_path)
+                logger.info(f"Using embedded Qdrant at {qdrant_path}")
             except Exception as e:
                 logger.error(f"Failed to connect to local Qdrant: {e}")
                 raise
@@ -227,9 +231,9 @@ Please provide your response here:
 
     async def _setup_collection(self):
         try:
-            # if self.qdrant_client.collection_exists(self.collection_name):
-            #     logger.info(f"Collection {self.collection_name} already exists")
-            #     return
+            if self.qdrant_client.collection_exists(self.collection_name):
+                logger.info(f"Collection {self.collection_name} already exists")
+                return
 
             self.qdrant_client.recreate_collection(
                 collection_name=self.collection_name,
@@ -720,7 +724,6 @@ def main(use_memory: bool, port: int, host: str) -> int:
 
     from starlette.requests import Request
     from starlette.responses import JSONResponse
-    import tempfile
 
     async def health(request: Request):
         return JSONResponse({"ok": True})
@@ -734,12 +737,14 @@ def main(use_memory: bool, port: int, host: str) -> int:
         if not (up.filename or "").lower().endswith(".pdf"):
             return JSONResponse({"success": False, "error": "Only PDF files are supported."}, status_code=400)
 
-        # Save to a temp path
-        fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
-        os.close(fd)
+        # Save to a stable path under GUIDELINES_DIR so it survives process restarts —
+        # /translate re-reads this path from Qdrant payload via _load_pdf_images
+        # whenever the in-memory pdf_images cache is cold (e.g. after a restart).
+        safe_name = f"{uuid.uuid4()}_{Path(up.filename).name}"
+        dest_path = str(GUIDELINES_DIR / safe_name)
         try:
             data = await up.read()
-            with open(tmp_path, "wb") as f:
+            with open(dest_path, "wb") as f:
                 f.write(data)
 
             # Ensure ColPali is ready
@@ -747,16 +752,14 @@ def main(use_memory: bool, port: int, host: str) -> int:
                 await rag_server.initialize_colpali()
 
             # Index with the existing pipeline
-            result_msg = await rag_server.index_pdf(tmp_path)
+            result_msg = await rag_server.index_pdf(dest_path)
             return JSONResponse({"success": True, "filename": up.filename, "message": result_msg})
         except Exception as e:
-            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
-        finally:
-            # Remove temp file
             try:
-                os.remove(tmp_path)
+                os.remove(dest_path)
             except Exception:
                 pass
+            return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
     async def translate_endpoint(request: Request):

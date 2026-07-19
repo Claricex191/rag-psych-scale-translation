@@ -12,6 +12,10 @@ __pycache__/
 # Runtime data
 rag_storage/
 output/
+qdrant-db-forward/
+qdrant-db-backward/
+guidelines-forward/
+guidelines-backward/
 
 # Third-party vendored
 bleurt/

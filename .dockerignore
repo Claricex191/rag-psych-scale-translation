@@ -1,0 +1,14 @@
+.venv/
+.git/
+.idea/
+__pycache__/
+*.pyc
+bleurt/
+rag_storage/
+output/
+qdrant-db-forward/
+qdrant-db-backward/
+guidelines-forward/
+guidelines-backward/
+.env
+.streamlit/secrets.toml
