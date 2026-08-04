@@ -11,9 +11,13 @@ GUIDELINES_DIR="$VOLUME_ROOT/guidelines-forward" \
 python server_forward.py --host 127.0.0.1 --port 8000 &
 FWD_PID=$!
 
+# Port 8001 is not used here — on RunPod it was found already bound by their
+# own platform nginx (root-owned, listening on *:8001), which blocks us from
+# also binding 127.0.0.1:8001. 8002 avoids that collision.
+BACKWARD_PORT=8002
 QDRANT_PATH="$VOLUME_ROOT/qdrant-db-backward" \
 GUIDELINES_DIR="$VOLUME_ROOT/guidelines-backward" \
-python server_backward.py --host 127.0.0.1 --port 8001 &
+python server_backward.py --host 127.0.0.1 --port "$BACKWARD_PORT" &
 BWD_PID=$!
 
 trap 'kill $FWD_PID $BWD_PID $ST_PID 2>/dev/null' TERM INT
@@ -35,7 +39,10 @@ wait_for_health() {
 }
 
 wait_for_health "$FWD_PID" 8000 "server_forward.py"
-wait_for_health "$BWD_PID" 8001 "server_backward.py"
+wait_for_health "$BWD_PID" "$BACKWARD_PORT" "server_backward.py"
+
+# Tell the Streamlit UI where the backward server actually ended up.
+export BACKWARD_SERVER_URL="http://127.0.0.1:$BACKWARD_PORT"
 
 # enableCORS/enableXsrfProtection=false: RunPod's proxy presents a different
 # external hostname than Streamlit sees internally, which fails its default
