@@ -104,6 +104,25 @@ def _write_temp_json(data: dict, tag: str) -> str:
     return str(path)
 
 
+def _set_scale_data(scale_data: dict):
+    """Commit a scale (from either the manual form or a JSON upload) and preview it."""
+    st.session_state.scale_data = scale_data
+    st.session_state.scale_path = _write_temp_json(scale_data, "scale")
+
+    info = scale_data.get("scale_info", {})
+    items = scale_data.get("items", [])
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Scale", info.get("short_name", "—"))
+    col2.metric("Items", len(items))
+    col3.metric("Population", info.get("target_population", "—"))
+
+    with st.expander("Preview items"):
+        for item in items[:5]:
+            st.markdown(f"**{item['number']}.** {item['text']}")
+        if len(items) > 5:
+            st.caption(f"… and {len(items) - 5} more items")
+
+
 def _render_translation_table(items: list, key_prefix: str):
     for item in items:
         col_num, col_orig, col_trans = st.columns([0.5, 3, 3])
@@ -215,41 +234,64 @@ def main():
 
     st.divider()
 
-    # ── Scale upload ─────────────────────────────────────────────────────────
-    st.subheader("2. Upload Scale File")
-    uploaded = st.file_uploader(
-        "Upload a JSON scale file",
-        type=["json"],
-        help="JSON must have `scale_info` (name, short_name, target_population) and `items` (number, text).",
+    # ── Scale input ──────────────────────────────────────────────────────────
+    st.subheader("2. Provide the Scale")
+    input_mode = st.radio(
+        "How do you want to provide the scale?",
+        ["Enter manually", "Upload JSON file"],
+        horizontal=True,
     )
 
-    if uploaded:
-        try:
-            scale_data = json.load(uploaded)
-            st.session_state.scale_data = scale_data
-            st.session_state.scale_path = _write_temp_json(scale_data, "scale")
+    if input_mode == "Enter manually":
+        with st.form("manual_scale_form"):
+            name = st.text_input("Scale name", placeholder="e.g. Beck Depression Inventory")
+            col_short, col_pop = st.columns(2)
+            short_name = col_short.text_input(
+                "Short name / abbreviation", placeholder="e.g. BDI (leave blank if unknown)"
+            )
+            target_population = col_pop.text_input(
+                "Target population", placeholder="e.g. adults aged 18+ (leave blank if unknown)"
+            )
+            items_text = st.text_area(
+                "Scale items — paste one item per line",
+                height=220,
+                placeholder="I feel sad most of the time.\nI have lost interest in activities I used to enjoy.\n...",
+            )
+            submitted = st.form_submit_button("Use this scale", type="primary")
 
-            info = scale_data.get("scale_info", {})
-            items = scale_data.get("items", [])
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Scale", info.get("short_name", "—"))
-            col2.metric("Items", len(items))
-            col3.metric("Population", info.get("target_population", "—"))
-
-            with st.expander("Preview items"):
-                for item in items[:5]:
-                    st.markdown(f"**{item['number']}.** {item['text']}")
-                if len(items) > 5:
-                    st.caption(f"… and {len(items) - 5} more items")
-        except Exception as e:
-            st.error(f"Could not parse JSON: {e}")
-            st.session_state.scale_data = None
-            st.session_state.scale_path = None
+        if submitted:
+            lines = [line.strip() for line in items_text.splitlines() if line.strip()]
+            if not name.strip():
+                st.error("Scale name is required.")
+            elif not lines:
+                st.error("Enter at least one item.")
+            else:
+                _set_scale_data({
+                    "scale_info": {
+                        "name": name.strip(),
+                        "short_name": short_name.strip() or "Not applicable",
+                        "target_population": target_population.strip() or "Not applicable",
+                    },
+                    "items": [{"number": str(i + 1), "text": line} for i, line in enumerate(lines)],
+                })
+    else:
+        uploaded = st.file_uploader(
+            "Upload a JSON scale file",
+            type=["json"],
+            help="JSON must have `scale_info` (name, short_name, target_population) and `items` (number, text).",
+        )
+        if uploaded:
+            try:
+                _set_scale_data(json.load(uploaded))
+            except Exception as e:
+                st.error(f"Could not parse JSON: {e}")
+                st.session_state.scale_data = None
+                st.session_state.scale_path = None
 
     st.divider()
 
     if not st.session_state.scale_data:
-        st.info("Upload a scale file above to begin.")
+        st.info("Provide a scale above to begin.")
         st.stop()
 
     scale_data = st.session_state.scale_data
