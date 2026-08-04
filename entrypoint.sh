@@ -37,7 +37,13 @@ wait_for_health() {
 wait_for_health "$FWD_PID" 8000 "server_forward.py"
 wait_for_health "$BWD_PID" 8001 "server_backward.py"
 
-streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true &
+# enableCORS/enableXsrfProtection=false: RunPod's proxy presents a different
+# external hostname than Streamlit sees internally, which fails its default
+# WebSocket Origin check and leaves the page stuck with a blank UI forever
+# (confirmed via browser console: repeated "WebSocket onerror"). Safe to
+# disable here since the password gate is the actual access control, not CORS.
+streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0 \
+  --server.headless true --server.enableCORS false --server.enableXsrfProtection false &
 ST_PID=$!
 
 # Exit (and let RunPod restart the pod) if any one process dies.
